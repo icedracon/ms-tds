@@ -1,10 +1,12 @@
 //! High-level TDS 7.4 client.
 //!
-//! STATUS: pre-alpha. `connect` and `login_ntlm` drive real I/O (PreLogin +
-//! Login7 with the NTLM Type1/Type3 exchange). `sql_batch` sends the batch and
-//! drains the response — messages, errors, and the DONE row_count come back —
-//! but ROW / COLMETADATA decoding is future work, so `ResultSet.rows` and
-//! `ResultSet.columns` stay empty.
+//! STATUS: pre-alpha. `connect` drives real I/O — PreLogin, and (if the server
+//! advertises `encryption != OFF`) the TLS-in-TDS handshake via
+//! [`crate::tls::upgrade_to_tls`]. `login_ntlm` performs the full NTLM Type 1 /
+//! Type 3 exchange over the (possibly encrypted) transport. `sql_batch` sends
+//! the batch and drains the response — messages, errors, and the DONE row_count
+//! come back — but ROW / COLMETADATA decoding is future work, so
+//! `ResultSet.rows` / `ResultSet.columns` stay empty.
 
 use ntlmssp::Ntlm;
 use tokio::net::TcpStream;
@@ -12,9 +14,9 @@ use tokio::net::TcpStream;
 use crate::error::{Error, Result};
 use crate::login7::Login7;
 use crate::packet::PacketType;
-use crate::prelogin::PreLogin;
+use crate::prelogin::{encryption, PreLogin};
 use crate::token::{parse_all, Token};
-use crate::transport::Transport;
+use crate::transport::{AsyncStream, Transport};
 
 /// One column in a result set.
 #[derive(Debug, Clone)]
@@ -50,32 +52,69 @@ pub struct TdsClient {
     transport: Transport,
     server: String,
     logged_in: bool,
+    encrypted: bool,
 }
 
 impl TdsClient {
-    /// Open a TCP connection and perform the PreLogin handshake.
+    /// Open a TCP connection and perform the PreLogin (+ optional TLS-in-TDS)
+    /// handshake.
     ///
     /// `instance` is accepted for API-shape compatibility but is not used yet —
     /// named-instance resolution needs the SQL Browser (UDP 1434) which is not
     /// implemented here.
     pub async fn connect(host: &str, port: u16, _instance: Option<&str>) -> Result<Self> {
         let stream = TcpStream::connect((host, port)).await?;
-        let mut transport = Transport::new(stream);
-        let pre = PreLogin::new_default();
+        Self::from_stream(Box::new(stream), host.to_string()).await
+    }
+
+    /// Drive PreLogin + optional TLS upgrade over an arbitrary caller-supplied
+    /// stream. This is the testing seam — pair it with `tokio::io::duplex` to
+    /// exercise the handshake without needing a real SQL Server socket.
+    pub async fn from_stream(stream: Box<dyn AsyncStream>, server: String) -> Result<Self> {
+        let mut transport = Transport::new_boxed(stream);
+
+        // Advertise "encryption OFF" — we don't require it but will honor the
+        // server's demand. Real SQL Server 2019+ ships `Force Encryption = yes`
+        // by default, so the server will respond with ENCRYPT_REQ.
+        let mut pre = PreLogin::new_default();
+        pre.encryption = encryption::OFF;
         transport.send(PacketType::PreLogin, &pre.encode()).await?;
+
         let (kind, body) = transport.recv().await?;
-        // Server replies with a TabularResult packet-type carrying a PreLogin-shaped body.
         if kind != PacketType::TabularResult && kind != PacketType::PreLogin {
             return Err(Error::Protocol("prelogin: unexpected response type"));
         }
-        // Parse — mostly informational (server version, encryption support).
-        // TODO: honor server ENCRYPTION option and negotiate TLS-in-TDS.
-        let _ = PreLogin::decode(&body)?;
+        let server_pre = PreLogin::decode(&body)?;
+
+        // Honor server's ENCRYPTION advertisement.
+        //
+        // OFF / NOT_SUP: server does not want / cannot do TLS — continue plaintext.
+        // ON:            server wants login encrypted only. We treat it as REQ
+        //                (encrypt the whole session) — that's what every modern
+        //                TDS client does, and modern SQL Server accepts it.
+        // REQ:           server demands full-session encryption — upgrade now.
+        let encrypted = match server_pre.encryption {
+            encryption::REQ | encryption::ON => {
+                let cfg = crate::tls::client_config_trust_any();
+                transport = crate::tls::upgrade_to_tls(transport, &server, cfg).await?;
+                true
+            }
+            encryption::OFF | encryption::NOT_SUP => false,
+            _ => return Err(Error::Protocol("prelogin: unknown ENCRYPTION value")),
+        };
+
         Ok(Self {
             transport,
-            server: host.to_string(),
+            server,
             logged_in: false,
+            encrypted,
         })
+    }
+
+    /// True if the session is running over TLS (server advertised
+    /// ENCRYPT_ON / ENCRYPT_REQ at PreLogin and the handshake completed).
+    pub fn is_encrypted(&self) -> bool {
+        self.encrypted
     }
 
     /// NTLM (SSPI) authentication.

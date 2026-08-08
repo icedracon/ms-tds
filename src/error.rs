@@ -14,6 +14,8 @@ pub enum Error {
     InvalidPacketType(u8),
     #[error("server error {code}: {message}")]
     Server { code: u32, message: String },
+    #[error("tls: {0}")]
+    Tls(String),
     #[error("unsupported: {0}")]
     Unsupported(&'static str),
 }

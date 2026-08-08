@@ -1,24 +1,39 @@
-//! Async TCP transport with TDS packet framing.
+//! Async transport with TDS packet framing.
 //!
-//! TLS-in-TDS (MS-TDS §2.2.6.5 pre-login ENCRYPTION option) is future work; this
-//! transport is plaintext for now. Modern SQL Server rejects unencrypted logins
-//! by default — the connect helper will therefore only succeed against a server
-//! configured with `Encrypt = false` or a legacy default.
+//! The transport holds a `Box<dyn AsyncStream>` — plain TCP for pre-TLS traffic,
+//! or the `TlsStream<TlsTunnel<...>>` produced by [`crate::tls::upgrade_to_tls`]
+//! after the TLS-in-TDS handshake completes. TDS packet framing sits on top of
+//! that stream unchanged: post-TLS, the TLS layer transparently encrypts the
+//! bytes we write and decrypts the bytes we read.
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use crate::packet::{status, Header, PacketType, DEFAULT_PACKET_SIZE, HEADER_LEN};
 use crate::Result;
 
+/// Trait alias for the shape the transport can drive: async, bidirectional,
+/// `Send + Unpin`. Blanket-implemented for anything satisfying those bounds so
+/// callers rarely name it directly — `TcpStream`, `DuplexStream`, and
+/// `TlsStream<..>` all qualify automatically.
+pub trait AsyncStream: AsyncRead + AsyncWrite + Send + Unpin {}
+impl<T: AsyncRead + AsyncWrite + Send + Unpin + ?Sized> AsyncStream for T {}
+
 pub struct Transport {
-    stream: TcpStream,
+    stream: Box<dyn AsyncStream>,
     packet_size: u16,
     next_pkt_id: u8,
 }
 
 impl Transport {
+    /// Convenience wrapper — box a `TcpStream` and hand it to the transport.
     pub fn new(stream: TcpStream) -> Self {
+        Self::new_boxed(Box::new(stream))
+    }
+
+    /// Wrap an already-boxed async stream. Used both for the plaintext TCP
+    /// path and for the post-TLS-upgrade `TlsStream<TlsTunnel<_>>`.
+    pub fn new_boxed(stream: Box<dyn AsyncStream>) -> Self {
         Self {
             stream,
             packet_size: DEFAULT_PACKET_SIZE,
@@ -26,10 +41,20 @@ impl Transport {
         }
     }
 
+    /// Consume the transport and hand back the underlying stream — the seam
+    /// used to upgrade a live plaintext connection to TLS-in-TDS.
+    pub fn into_stream(self) -> Box<dyn AsyncStream> {
+        self.stream
+    }
+
     /// Update the negotiated packet size (server advertises via ENV_CHANGE type 4).
     /// Values below 512 are clamped up to 512 — SQL Server rejects anything smaller.
     pub fn set_packet_size(&mut self, sz: u16) {
         self.packet_size = sz.max(512);
+    }
+
+    pub fn packet_size(&self) -> u16 {
+        self.packet_size
     }
 
     /// Send `payload` as one TDS message, framed into 1+ packets.
@@ -59,6 +84,7 @@ impl Transport {
             }
             id = id.wrapping_add(1);
         }
+        self.stream.flush().await?;
         self.next_pkt_id = id;
         Ok(())
     }
