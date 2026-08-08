@@ -1,0 +1,26 @@
+[package]
+name = "ms-tds"
+version = "0.1.0-dev"
+edition = "2021"
+rust-version = "1.74"
+authors = ["zevs"]
+license = "MIT"
+description = "Pure-Rust TDS 7.4 client for Microsoft SQL Server — PreLogin, Login7 with NTLM SSPI, SQLBatch — with offensive primitives (xp_cmdshell, xp_dirtree UNC coerce, linked-server enum)."
+keywords = ["tds", "mssql", "sqlserver", "windows"]
+categories = ["database", "network-programming", "parser-implementations"]
+
+[dependencies]
+thiserror = "2"
+ntlmssp = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util"] }
+# `ring` backend keeps the build pure-Rust — `aws-lc-rs` (default) would pull cmake/nasm on Windows.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+byteorder = "1"
+bytes = "1"
+encoding_rs = "0.8"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
+
+[badges]
+maintenance = { status = "experimental" }
