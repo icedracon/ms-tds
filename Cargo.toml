@@ -6,8 +6,10 @@ rust-version = "1.74"
 authors = ["zevs"]
 license = "MIT"
 repository = "https://github.com/icedracon/ms-tds"
-description = "Pure-Rust TDS 7.4 client for Microsoft SQL Server — PreLogin, TLS-in-TDS handshake tunneling, Login7 with NTLM SSPI, SQLBatch — with offensive primitives (xp_cmdshell, xp_dirtree UNC coerce, linked-server enum)."
-keywords = ["tds", "mssql", "sqlserver", "windows"]
+documentation = "https://docs.rs/ms-tds"
+description = "Pure-Rust TDS 7.4 client for Microsoft SQL Server — PreLogin, TLS-in-TDS handshake tunneling, Login7 with NTLM SSPI, SQLBatch, plus offensive primitives (xp_cmdshell, xp_dirtree UNC coerce, linked-server enum)"
+readme = "README.md"
+keywords = ["tds", "mssql", "sqlserver", "ntlm", "pentest"]
 categories = ["database", "network-programming", "parser-implementations"]
 
 [dependencies]
