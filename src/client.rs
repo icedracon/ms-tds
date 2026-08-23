@@ -224,6 +224,35 @@ impl TdsClient {
     pub fn is_logged_in(&self) -> bool {
         self.logged_in
     }
+
+    /// Bulk-collect wrapper around [`Self::sql_batch`] — same semantics, kept
+    /// as a distinct name so consumers can grep for "one-shot query" versus
+    /// the lower-level batch primitive. Row decoding is still gated on the
+    /// COLMETADATA/ROW decoder (see module docs); today this returns the
+    /// same shape as `sql_batch` — messages + `row_count`, empty `rows`.
+    pub async fn run_query(&mut self, sql: &str) -> Result<ResultSet> {
+        self.sql_batch(sql).await
+    }
+
+    /// Push a server-scope impersonation frame:
+    /// `EXECUTE AS LOGIN = '<principal>'`. Requires `IMPERSONATE` on the
+    /// target login. Returns Ok on success (any server error surfaces as
+    /// [`Error::Server`]). Each call stacks — pair with [`Self::revert_to_self`]
+    /// to unwind, or call `revert_to_self` in a LIFO loop for a chain.
+    pub async fn impersonate(&mut self, principal: &str) -> Result<()> {
+        let _ = self
+            .sql_batch(&crate::pentest::execute_as_login(principal))
+            .await?;
+        Ok(())
+    }
+
+    /// Pop one impersonation frame previously pushed by
+    /// [`Self::impersonate`]. If no frame is stacked, MSSQL returns a
+    /// server error (surfaced as [`Error::Server`]).
+    pub async fn revert_to_self(&mut self) -> Result<()> {
+        let _ = self.sql_batch(crate::pentest::revert()).await?;
+        Ok(())
+    }
 }
 
 fn hostname_fallback() -> String {
